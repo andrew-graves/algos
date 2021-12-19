@@ -1,0 +1,513 @@
+---
+title: "An Introduction to the Robust Shared Response Model"
+author: "Andrew J. Graves, Cory Clayton, Joon Yuhl Soh, Gabe Yohe"
+date: "12/10/2020"
+output: 
+  rmdformats::material:
+    highlight: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+# Overview of RSRM
+
+Let $N$ be the number of subjects, $v$ the number of features, $k$ the number of latent components, and $t$ the number of time-points.
+
+The following expression is the primary equation for the Robust Shared-Response model
+
+\begin{equation}
+\mathbf{X}^{(i)} = \mathbf{W}^{(i)}\mathbf{R} + \mathbf{S}^{(i)} + \mathbf{E}^{(i)},\ i = 1 \dots N
+\end{equation}
+
+where $(i)$ is the indexer for each individual subject.
+
+### **Model representation**
+
+- $\mathbf{X}^{(i)} \in \mathbb{R}^{v_i \times t}$ is the data matrix 
+
+- $\mathbf{W}^{(i)} \in \mathbb{R}^{v_i \times k}$ is the matrix mapping from the observed subject space to the shared latent space
+
+- $\mathbf{R} \in \mathbb{R}^{k \times t}$ is the shared-response matrix
+
+- $\mathbf{S}^{(i)} \in \mathbb{R}^{v_i \times t}$ is the non-shared matrix unique to each individual subject
+
+- $\mathbf{E}^{(i)} \in \mathbb{R}^{v_i \times t}$ is an additive noise matrix specific for each subject
+
+### **Hyper-parameters**
+**Lambda** ($\lambda$)
+
+We can specify the shrinkage parameter $\lambda$ to balance how much is shared  ($\mathbf{R}$) by all subjects and how much is unique to each subject ($\mathbf{S}^{(i)}$). As $\lambda \rightarrow \infty$, the model is equivalent to the deterministic solution where $\mathbf{S}^{(i)}\rightarrow 0$. As $\lambda \rightarrow 0$, there will be no shared response between individuals and all portions are unique to each individual. In other words $\mathbf{S}^{(i)}\rightarrow \mathbf{X}^{(i)}$.
+
+**Number of Components**
+
+We can specify the number of components we want our model to compute. This is analogous to selecting the number of components in robust principal components analysis. However, it is important to note that specifying a different number of components on the front-end constrains the model-fitting optimization to that specified number. 
+
+### **Optimization Problem**
+Equation (1) is then estimated by solving the following optimization problem
+
+\begin{equation}\tag{2}
+\min\limits_{\mathbf{S}^{(i)}, \mathbf{W}^{(i)}, \mathbf{R}}  \sum_{i=1}^{N} \frac{1}{2} ||\mathbf{X}^{(i)} - \mathbf{W}^{(i)}\mathbf{R} - \mathbf{S}^{(i)}||^2_F + \lambda_i||\mathbf{S}^{(i)}||_1\\
+\text{s.t.}\ \mathbf{W}^{(i)^T}\mathbf{W}^{(i)} = \mathbf{I}, \ \ \forall i = 1 \dots N
+\end{equation}
+
+Equation (2) is a non-convex optimization problem, but we can use a greedy approach to estimate subsets of the model and combine the results at the end. Using Block Coordinate Descent, we can partition the variables into blocks and optimize each block while fixing the other blocks constant. In RSRM, each individual mapping from the latent space $\mathbf{W}^{(i)}$, each individual non-shared/unique matrix $\mathbf{S}^{(i)}$, and the shared response model $\mathbf{R}$ is a block. Because optimizing each of these blocks while keeping the other blocks constant is a convex problem, we can approximate the global optimum with a greedy solution. 
+
+### **The Algorithmic Process**
+
+The derivations of $\mathbf{R}$, $\mathbf{W}^{(i)}$, and $\mathbf{S}^{(i)}$, will be provided above the R demonstrations in later sections of this post. Here we will discuss the broader process of the algorithm. 
+
+The algorithmic process iterates through these three steps. 
+
+**(1) Solve for $\mathbf{W}^{(i)}$ with Procrustes:** 
+<br />
+\begin{equation}\tag{3}
+\mathbf{W}^{(i)} = \mathbf{U}^{(i)}\mathbf{V}^{(i)^T}
+\end{equation}
+<br />
+where $\mathbf{U}^{(i)}\mathbf{V}^{(i)^T}$ is achieved through singular value decomposition (SVD)
+<br />
+<br />
+\begin{equation}\tag{4}
+\mathbf{U}^{(i)}\mathbf{\Sigma}^{(i)}\mathbf{V}^{(i)} = (\mathbf{X}^{(i)} - \mathbf{S}^{(i)} ) \mathbf{R}^T
+\end{equation}
+<br />
+<br />
+
+**(2) Solve for $\mathbf{S}^{(i)}$ with soft shrinkage:**
+<br />
+\begin{equation}\tag{5}
+\mathbf{S}^{(i)}=\text{Shrink(}\mathbf{X}^{(i)}-\mathbf{W}^{(i)}\mathbf{R},   \lambda)
+\end{equation}
+<br />
+where the amount of shrinkage is determined by $\lambda$. 
+<br />
+<br />
+<br />
+<br />
+**(3) Solve for $\mathbf{R}$:**
+<br />
+\begin{equation}\tag{6}
+\mathbf{R} = \frac{1}{N} \sum_{i=1}^{N}
+\mathbf{W}^{(i)^T}(\mathbf{X}^{(i)}-\mathbf{S}^{(i)})
+\end{equation}
+<br />
+<br />
+Generally the optimal solution can be achieved with a relatively low number of iterations, which is ideal since we would like to update the shared response in a computationally efficient manner.
+
+# Primary RSRM Routine
+
+In this section, we will demonstrate the structure of our R implementation for computing $\mathbf{R}$, $\mathbf{S}^{(i)}$, and $\mathbf{W}^{(i)}$. 
+
+## Run Initial Checks
+
+- Check that $\lambda > 0$, given $\lambda$ needs to be strictly non-negative.
+
+- Check if every matrix in $\mathbf{X}^{(i)}$ has the same number of time-points; this is equivalent to the number of columns.
+
+- Check if more than one subject is in $\mathbf{X}^{(i)}$. Naturally, we cannot find what is shared between subjects if there is only one subject.
+
+## Extract Constants from Inputs
+
+- Extract the number of subjects we have by taking the length of the list, $\mathbf{X}^{(i)}$
+
+- Extract the number of features by counting the number of rows in each subject matrix in $\mathbf{X}^{(i)}$
+
+- Extract the number of time-points by counting the columns for a single subject in $\mathbf{X}^{(i)}$
+
+These three values are constant throughout the algorithm.
+
+## Initialize Parameters
+
+- $\mathbf{W}^{(i)} \in \mathbb{R}^{v_i \times k}$ is initialized by *init_transforms*, which makes $\mathbf{W}^{(i)}$ orthogonal. The values within $\mathbf{W}^{(i)}$ are drawn from a random Gaussian distribution.
+
+- $\mathbf{X}^{(i)} \in \mathbb{R}^{v_i \times t}$ is initialized by *init_individuals* as a series of empty matrices of shape, 
+
+- $\mathbf{R} \in \mathbb{R}^{k \times t}$ is initialized with *update_shared_response*, which returns the shared response as a function of $\mathbf{X}^{(i)},\mathbf{S}^{(i)}, \text{and} \ \mathbf{W}^{(i)}$. 
+
+## Block-Coordinate Descent
+
+For optimization, we run block-coordinate descent using *update_transforms*, *update_individual*, and *update_shared_response* to return $\mathbf{W}^{(i)},\  \mathbf{S}^{(i)}, \text{and}\ \mathbf{R}$ respectively.
+
+We will go into greater depth for each of these defined sub-routines in subsequent sections of this post. 
+
+```{r rsrm}
+# Primary Robust Shared Response Model routine
+rsrm <- function(X, n_components, lambda = 1, iter = 10){
+  
+  # Ensure lambda is strictly non-negative
+  if(lambda < 0){
+    stop("Lambda must be non-negative.")
+  }
+  
+  # Extract number of time-points
+  n_time <- unique(sapply(X, ncol))
+  
+  # Each input matrix must have equal number of time-points
+  if(length(n_time) > 1){
+    stop("All subjects must have the same number of time-points.")
+  }
+  
+  # Number of subjects
+  subjs <- length(X)
+  
+  # Require at least 2 subjects to fit RSRM
+  if(subjs < 2){
+    stop("You need to provide at least 2 subjects to fit RSRM")
+  }
+  
+  # Number of features for each subject
+  features <- sapply(X, nrow)
+  
+  # Initialize W (mapping) matrices
+  W <- init_transforms(subjs, features, n_components)
+  # Initialize S (subject) matrices
+  S <- init_individual(subjs, features, n_time)
+  # Initialize R (shared-response) matrix
+  R <- update_shared_response(X, S, W, n_components)
+  
+  # Block-Coordinate Descent
+  for(i in 1:iter){
+    
+    # Solve for W (mapping) matrices
+    W <- update_transforms(X, S, R)
+    # Solve for S (subject) matrices
+    S <- update_individual(X, W, R, lambda)
+    # Solve for R (shared-response) matrix
+    R <- update_shared_response(X, S, W, n_components)
+    
+  }
+  # Store RSRM results
+  return(list("R" = R, "S" = S, "W" = W))
+}
+```
+
+# QR Decomposition to Initialize (W)
+
+This algorithm uses QR decomposition which takes a matrix $\mathbf{A}$ and factors it into the product $\mathbf{A}=\mathbf{QR}$, where $\mathbf{Q}$ is an orthogonal matrix and $\mathbf{R}$ is an upper-right triangular matrix. QR decomposition can be used to efficiently solve the ordinary least-squares problem and can also be used to solve for eigenvalues and eigenvectors of a matrix. However, in the context of the RSRM algorithm, it is only used to find a random orthogonal matrix as a starting point for the mapping matrix $\mathbf{W}^{(i)}$.$^3$
+
+```{r init_transforms}
+init_transforms <- function(subjs, features, n_components){
+  # Initialize W (mapping) matrix list
+  W <- base::vector(mode = "list", length = subjs)
+
+  for(i in 1:subjs){
+    # Initialize W (mapping) matrices
+    W[[i]] <- matrix(rnorm(features[i] * n_components), 
+                         nrow = features, 
+                         ncol = n_components)
+  
+    # Make W an orthogonal matrix with QR
+    W[[i]] <- qr.Q(qr(W[[i]]))
+  }
+  return(W)
+}
+```
+
+# Initializing Unshared Components (S)
+
+Here we initialize $\mathbf{S}^{(i)} \in \mathbb{R}^{v_i \times t}$ with each element of $\mathbf{S}^{(i)}$ set to 0.
+```{r init_individual}
+init_individual <- function(subjs, features, n_time){
+  # Initialize S matrix list
+  S <- base::vector(mode = "list", length = subjs)
+  for(i in 1:subjs){
+    # Initialize S (subject) matrix
+    S[[i]] <- matrix(0, nrow = features[i], 
+                      ncol = n_time)
+  }
+  return(S)
+}
+```
+
+# Update Shared Response (R)
+
+Here we derive $\mathbf{R} \in \mathbb{R}^{k \times t}$
+\begin{align}
+\mathbf{X}^{(i)} &= \mathbf{W}^{(i)}\mathbf{R} + \mathbf{S}^{(i)} \\
+
+\mathbf{W}^{(i)}\mathbf{R} &= \mathbf{X}^{(i)} - \mathbf{S}^{(i)} \\
+
+\mathbf{W}^{(i)^T} \mathbf{W}^{(i)}\mathbf{R} &= \mathbf{W}^{(i)^T} (\mathbf{X}^{(i)} - \mathbf{S}^{(i)})
+\end{align}
+
+and since $\mathbf{W}^{(i)}$ is orthogonal, $\mathbf{W}^{(i)^T} \mathbf{W}^{(i)} = \mathbf{I}$
+
+$$\mathbf{R} = \mathbf{W}^{(i)^T}(\mathbf{X}^{(i)}-\mathbf{S}^{(i)})$$
+Then an update to the shared response $\mathbf{R}$ is given by minimizing the sum of the Frobenius norm terms:
+
+\begin{equation}\tag{6}
+\mathbf{R} = \frac{1}{N} \sum_{i=1}^{N}
+\mathbf{W}^{(i)^T}(\mathbf{X}^{(i)}-\mathbf{S}^{(i)})
+\end{equation}
+
+This shows that $\mathbf{R}$ is calculated by averaging all of the subjects projected data after removing what is unique to each individual. This procedure is used both in the initialization of $\mathbf{R}$ and in the primary optimization routine. Note there is only one $\mathbf{R}$ matrix as it represents the shared latent space between subjects.
+
+```{r update_shared_response}
+update_shared_response <- function(X, S, W, n_components){
+  
+  # Number of subjects
+  subjs <- length(X)
+  
+  # Number of time-points
+  n_time <- ncol(X[[1]])
+  
+  # Initialize R matrix
+  R <- matrix(0, nrow = n_components, 
+                 ncol = n_time)
+  
+  # Update R
+  for(i in 1:subjs){
+    R <- R + t(W[[i]]) %*% (X[[i]] - S[[i]])
+  }
+  
+  # Scale down R by number of subjects
+  R <- R / subjs
+  return(R)
+}
+```
+
+# Solve for the Mapping (W)
+
+Here we solve for $\mathbf{W}^{(i)} \in \mathbb{R}^{v_i \times k}$
+$$\mathbf{X}^{(i)} = \mathbf{W}^{(i)}\mathbf{R} + \mathbf{S}^{(i)}$$ 
+$$\mathbf{W}^{(i)}\mathbf{R} =\mathbf{X}^{(i)} - \mathbf{S}^{(i)}$$
+Since $\mathbf{R}$ is a singular matrix there is no basic operation to solve for $\mathbf{W}^{(i)}$. This is called the Procrustes problem,$^4$ which looks for the orthogonal matrix $\mathbf{W}^{(i)}$ which most closely maps $\mathbf{R}$ onto $(\mathbf{X}^{(i)} - \mathbf{S}^{(i)})$. This problem has a closed form solution using Singular Value Decomposition (SVD).
+
+SVD is a widely used factorization of a matrix $\mathbf{M}=\mathbf{U \Sigma V}^T$ where $\mathbf{U}$ and $\mathbf{V}$ are the left and right Unitary Matrices of $\mathbf{M}$ and $\mathbf{\Sigma}$ is a rectangular diagonal matrix consisting of the singular values. SVD is used in principal component analysis, signal processing, as well as finding pseudo-inverses, but here we are going to use it to find the nearest orthogonal matrix $\mathbf{O}$ to matrix $\mathbf{M}$ using the Frobenius norm. The solution to this problem is $\mathbf{O} = \mathbf{UV}^T$ where $\mathbf{M}=\mathbf{U \Sigma V}^T$ which amounts to replacing $\mathbf{\Sigma}$ with an identity matrix $\mathbf{I}$.
+
+Similarly, when trying to find the nearest orthogonal matrix $\mathbf{O}$ which maps $\mathbf{A}$ onto $\mathbf{B}$ is defined by
+$$\mathbf{O} = \underset{\Omega}{\arg\min}||\mathbf{A\Omega-B}||_F \: \: \: s.t.  \:\: \mathbf{\Omega} ^T\mathbf{ \Omega}=\mathbf{I}$$
+which is equivalent to finding the nearest orthogonal matrix to $\mathbf{M}=\mathbf{A}^T\mathbf{B}$.
+
+Coming back to our problem, we set $\mathbf{M}= (\mathbf{X}^{(i)} - \mathbf{S}^{(i)} ) \mathbf{R}^T$ and factor it to
+
+\begin{equation}\tag{4}
+\mathbf{U}^{(i)} \mathbf{\Sigma}^{(i)}\mathbf{V}^{(i)} = (\mathbf{X}^{(i)} - \mathbf{S}^{(i)} ) \mathbf{R}^T
+\end{equation}
+
+so then we can solve for the orthogonal matrix $\mathbf{W}^{(i)}$ by
+\begin{equation}\tag{3}
+\mathbf{W}^{(i)} = \mathbf{U}^{(i)}\mathbf{V}^{(i)^T}
+\end{equation}
+
+```{r update_transforms}
+update_transforms <- function(X, S, R){
+  
+  # Number of subjects
+  subjs <- length(X)
+  
+  # Initialize W (mapping) matrix list
+  W <- base::vector(mode = "list", length = subjs)
+  
+  for(i in 1:subjs){
+    
+    M <- (X[[i]] - S[[i]]) %*% t(R)
+    
+    # Singular Value Decomposition
+    svd_res <- svd(M)
+    # Solution to the Procrustes problem
+    W[[i]] <- svd_res$u %*% t(svd_res$v)
+  }
+  return(W)
+}
+```
+
+# Solve for Unshared Components (S)
+
+Soft shrinkage function is applied to the individual residual $\mathbf{D}^{(i)}$ in the following way
+
+$$\mathbf{D}^{(i)}=\mathbf{X}^{(i)}-\mathbf{W}^{(i)}\mathbf{R}$$ 
+
+where soft shrinkage of $\mathbf{D}^{(i)}$ is equal to $\mathbf{S}^{(i)}$ (see equation 5).
+
+```{r update_individual}
+update_individual <- function(X, W, R, lambda){
+  
+  # Number of subjects
+  subjs <- length(X)
+  
+  # Initialize S (subject) matrix list
+  S <- base::vector(mode = "list", length = subjs)
+  
+  # Compute regularized S (subject) matrices
+  for(i in 1:subjs){
+    S[[i]] <- shrink(X[[i]] - W[[i]] %*% R, lambda)
+  }
+  return(S)
+}
+```
+
+# Soft Shrinkage
+
+Soft shrinkage is applied to $\mathbf{D}^{(i)} \in \mathbb{R}^{v_i \times t}$ 
+
+$$s = S_{\lambda_i}(d) =
+\begin{cases} 
+(|d|-\lambda_i)\text{sign}(d), & \text{if}\ |d| > \lambda_i \\
+0 & \text{otherwise.} 
+\end{cases}$$
+
+Note that the *pos* and *neg* objects in the cell below are Boolean matrices that index into $\mathbf{D}^{(i)}$ to determine the correct shrinkage application.
+
+```{r shrink}
+shrink <- function(D, lambda){
+  
+  # Find absolute values greater than lambda
+  pos <- D > lambda
+  neg <- D < -lambda
+  
+  # Penalize large absolute values by lambda
+  D[pos] <- D[pos] - lambda
+  D[neg] <- D[neg] +  lambda
+
+  # Assign all other values to 0
+  D[!pos & !neg] <- 0
+  return(D)
+}
+```
+
+# Simulate Data
+
+RSRM can be classified as an unsupervised learning problem. In this way, there is no way to predict with certainty what the patterns should look like when applied to naturalistic signals with unknown parameters. In order to get an intuitive sense that our RSRM implementation is working properly, we can simulate data with known parameters and attempt to recover them through visualization of the latent shared space. Sine-waves with specific frequencies $f$ are a good candidate for simulating time-series signals. Remember that this implementation of RSRM is *greedy*, and there are no guarantees that it will return the globally optimal solution. For this approach, we are expecting output that is intuitive and that matches our prior expectation, rather than searching for a specific point estimate for $f$. This is because multiple signals will likely be embedded into the same latent space and will not be perfectly separated.
+
+Let $A$ be amplitude, $\theta$ phase angle offset, $\mathbf{t} \in \mathbb{R}^N$ time. Sine-waves can be generated with the expression
+
+$$A \sin(2\pi f \mathbf{t} + \theta)$$
+
+Note that if $A = 1$ and $\theta = 0$, then the standard sine wave can be simplified to 
+
+$$\sin(2\pi f\mathbf{t})$$
+We can perturb this signal by adding Gaussian noise generated by $N \sim (\mu, \sigma)$, and attempt to recover all instances of $f$ in the latent shared response space.
+
+```{r sim_data, fig.height = 4}
+# Generate a sine wave
+sine_wave <- function(freq, srate, amp = 1){
+  
+  # Get the time series vector
+  time <- seq(0, 1 - (1 / srate), 1 / srate)
+  # Compute the sine-wave
+  sin_wave <-  amp * sin(2 * pi * freq * time)
+  return(sin_wave)
+  
+}
+
+sim_data <- function(n_subj, n_feat, n_time, freq_fam, 
+                     feats_w_sig = "all", subjs_w_sig = "all"){
+
+  # Initialize signal and noise matrices
+  sim_res <- base::vector(mode = "list", length = n_subj)
+  noise <- sim_res
+
+  for(i in 1:n_subj){
+    # Generate signals from frequency family
+    sim_res[[i]] <- matrix(
+      sine_wave(freq = sample(freq_fam, 1), 
+                srate = n_time), 
+      nrow = n_feat, 
+      ncol = n_time, 
+      byrow = TRUE)
+    # Generate noise
+    noise[[i]] <- matrix(
+      rnorm(n_feat*n_time, 0, 4), 
+      nrow = n_feat, 
+      ncol = n_time)
+    # Add noise to signals
+    sim_res[[i]] <- sim_res[[i]] + noise[[i]]
+  }
+  return(sim_res)
+}
+
+# Specify simulation parameters
+n_subj <- 100
+n_feat <- 32
+n_time <- 1000
+freqs <- c(10, 25)
+
+# Simulate data
+sim1 <- sim_data(n_subj = n_subj, n_feat = n_feat, 
+                 n_time = n_time, freq_fam = freqs)
+
+# Specify hyper-parameters for RSRM
+n_comp <- length(freqs)
+lams <- c(0, 1e6)
+
+# Run RSRM on simulated data
+rsrm_out <- base::vector(mode = "list", length = n_subj)
+
+for(i in 1:length(lams)){
+  rsrm_out[[i]] <- rsrm(X = sim1, n_components = n_comp, 
+                        lambda = lams[i], iter = 100)
+}
+```
+
+# Visualizing RSRM components
+
+Here we are attempting to recover the frequencies $f$ that generated the data. The following plots are a simple demonstration that we get better separation of the components shared across subjects as $\lambda \rightarrow \infty$. This is a trade-off, because the individual non-shared components will not be as well identified as $\lambda \rightarrow \infty$. The input frequencies for this simulation were `r freqs[1]` and `r freqs[2]` Hz.
+
+```{r plot_data, warning = FALSE}
+library(tidyverse)
+library(patchwork)
+
+final_plots <- list()
+for(i in 1:length(lams)){
+  
+  if(i == 1){
+    title <- expression(
+         paste("Low ", lambda, " value"))
+    y <- "Amplitude (arb. units)"
+  } else {
+    title <- expression(
+         paste("High ", lambda, " value"))
+    y <- ""
+  }
+
+  # Set plot themes
+  theme_set(theme_bw())
+
+  # Get data for plot
+  plot_dat <- rsrm_out[[i]]$R %>%
+    t() %>%
+    data.frame()
+
+  # Name the columns
+  colnames(plot_dat) <- paste("Component", 1:n_comp)
+
+  # Plot the data
+  final_plots[[i]] <- plot_dat %>%
+    bind_cols("Time" = 1:n_time) %>%
+    pivot_longer(-Time) %>% 
+    ggplot(aes(x = Time, y = value, color = name)) +
+    geom_line() + 
+    scale_color_brewer(palette = "Set1") +
+    facet_wrap(~name, scales = "free", nrow = 3) + 
+    labs(y = y,
+       title = title) +
+    theme(legend.position = "none")
+}
+
+patch <- final_plots[[1]] | final_plots[[2]]
+final_fig  <- patch + 
+  plot_annotation(title = "RSRM simulation results visualizing the primary latent space vectors")
+print(final_fig)
+```
+
+# Conclusions
+
+In the field of BCI, the computational time required for training individual models takes a substantial amount of time. This is due to the heterogeneity of signals between individuals performing the same task. Fitting a shared response model (SRM) for all subjects can accelerate future training time significantly. RSRM further advanced the approach of traditional SRM by explicitly accounting for the non-shared portion of the signals, which results in better predictive performance on real neuroscience data. In RSRM, signals from each subject are decomposed into a shared response and a non-shared response.
+
+By applying this RSRM algorithm to EEG data, we hope to advance the technological capacity of BCI by improving accuracy and reducing training time.
+It is important to note that RSRM can be applied to any domain in data science in which you can effectively represent your data structure as a sequence of features measured throughout time from multiple entities. RSRM is a general-purpose technique for measuring latent variables across time from multiple sensors and individuals. We believe that other people within the machine learning community could benefit from applying this neuroscience technique.
+
+## References
+
+[1] Chen, P.-H. (Cameron), Chen, J., Yeshurun, Y., Hasson, U., Haxby, J., & Ramadge, P. J. (2015). A Reduced-Dimension fMRI Shared Response Model. In C. Cortes, N. Lawrence, D. Lee, M. Sugiyama, & R. Garnett (Eds.), Advances in Neural Information Processing Systems (Vol. 28, pp. 460–468). Curran Associates, Inc. 
+
+[2] Turek, J. S., Ellis, C. T., Skalaban, L. J., Turk-Browne, N. B., & Willke, T. L. (2018). Capturing Shared and Individual Information in fMRI Data. 2018 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP), 826–830. https://doi.org/10.1109/IC
+
+[3] Trefethen, Lloyd N., and David Ill. Bau. Numerical Linear Algebra. 1st Edition ed., SIAM Society for Industrial and Applied Mathematics, 2000.
+
+[4] Schönemann, P.H. A generalized solution of the orthogonal procrustes problem. Psychometrika 31, 1–10 (1966). https://doi.org/10.1007/BF02289451
+
+[5] Kumar, M., Ellis, C. T., Lu, Q., Zhang, H., Capotă, M., Willke, T. L., Ramadge, P. J., Turk-Browne, N. B., & Norman, K. A. (2020). BrainIAK tutorials: User-friendly learning materials for advanced fMRI analysis. PLOS Computational Biology, 16(1), e1007549. https://doi.org/10.1371/journal.pcbi.1007549
