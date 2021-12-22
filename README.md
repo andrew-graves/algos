@@ -5,6 +5,6 @@
 Some examples include: 
 
 - Heapsort (in *cs*)
-- *Q$*learning (in *rl*)
+- *Q*learning (in *rl*)
 - Newton's optimization method (see *log_reg* in *stats*)
 - etc...
